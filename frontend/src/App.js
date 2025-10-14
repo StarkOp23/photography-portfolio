@@ -419,7 +419,9 @@ function App() {
             whileHover={{ scale: 1.05 }}
             transition={{ type: "spring", stiffness: 400, damping: 10 }}
           >
-            <span className="vintage-camera-icon">📷</span>
+            <span className="vintage-camera-icon">
+              <img src="/camera - Copy.png" alt="Camera Icon" />
+            </span>
             <h1 className="vintage-brand-title">Artsy Lens</h1>
           </motion.div>
 

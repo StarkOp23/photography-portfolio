@@ -69,12 +69,21 @@ body {
 }
 
 .vintage-camera-icon {
-  font-size: 1.75rem;
-  background: linear-gradient(135deg, var(--modern-accent), var(--modern-secondary));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;        
+  height: 40px;       
+  overflow: hidden;   
 }
+
+.vintage-camera-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain; 
+  display: block;
+}
+
 
 .vintage-brand-title {
   font-family: 'Inter', sans-serif;
@@ -337,62 +346,138 @@ body {
   padding-top: 1rem;
 }
 
-/* Hero Section - Responsive */
+/* Hero Section */
 .vintage-hero {
-  height: 60vh;
-  min-height: 400px;
-  background:
-    linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, transparent 100%),
-    url('https://images.unsplash.com/photo-1516035069371-29a1b244cc32?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80');
-  background-size: cover;
-  background-position: center;
+  height: 70vh;
+  min-height: 450px;
   position: relative;
-  margin-bottom: 3rem;
+  margin-bottom: 4rem;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 0 0 var(--border-radius-lg) var(--border-radius-lg);
   overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(0, 0, 0, 0.6) 0%, rgba(20, 20, 20, 0.7) 100%),
+    url('https://images.unsplash.com/photo-1516035069371-29a1b244cc32?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80');
+  background-size: 110%;
+  background-position: center;
+  background-repeat: no-repeat;
+  animation: slow-pan 30s ease-in-out infinite alternate;
 }
 
+/* Soft moving light overlay */
 .vintage-hero::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, transparent 50%);
+  inset: 0;
+  background: linear-gradient(
+    120deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  animation: shimmer 15s linear infinite;
+  pointer-events: none;
 }
 
+/* Subtle vignette around edges for focus */
+.vintage-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at center,
+    transparent 60%,
+    rgba(0, 0, 0, 0.6) 100%
+  );
+  pointer-events: none;
+}
+
+/* Background animations */
+@keyframes slow-pan {
+  0% {
+    background-position: center center;
+    transform: scale(1);
+  }
+  100% {
+    background-position: center top;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    opacity: 0.3;
+    transform: translateX(-100%);
+  }
+  50% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 0.3;
+    transform: translateX(100%);
+  }
+}
+
+/* Content Styling */
 .vintage-hero-content {
   position: relative;
   text-align: center;
   color: var(--modern-text);
   z-index: 2;
-  max-width: 90%;
   padding: 0 1rem;
+  max-width: 90%;
 }
 
 .vintage-hero-title {
-  font-family: 'Inter', sans-serif;
-  font-size: 2.5rem;
+  font-family: 'Playfair Display', serif;
+  font-size: 3rem;
   font-weight: 800;
   margin-bottom: 1rem;
   letter-spacing: -1px;
   line-height: 1.1;
-  background: linear-gradient(135deg, var(--modern-text), var(--modern-accent));
+  background: linear-gradient(135deg, #fff 0%, #d6b88a 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  background-clip: text;
+  text-shadow: 0 2px 20px rgba(255, 255, 255, 0.15);
+  animation: fade-in-text 2s ease-out forwards;
 }
 
 .vintage-hero-subtitle {
+  font-family: 'Inter', sans-serif;
   font-size: 1.2rem;
-  color: var(--modern-text-light);
+  color: rgba(255, 255, 255, 0.85);
   font-weight: 400;
   max-width: 600px;
   margin: 0 auto;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes fade-in-text {
+  0% {
+    opacity: 0;
+    letter-spacing: 2px;
+  }
+  100% {
+    opacity: 1;
+    letter-spacing: 0;
+  }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .vintage-hero {
+    height: 60vh;
+  }
+
+  .vintage-hero-title {
+    font-size: 2.2rem;
+  }
+
+  .vintage-hero-subtitle {
+    font-size: 1rem;
+  }
 }
 
 /* Controls Section - Responsive */
@@ -523,12 +608,14 @@ body {
   position: relative;
   height: 250px;
   overflow: hidden;
+  background-position: center;
 }
 
 .vintage-post-image {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
   transition: transform 0.5s ease;
 }
 
@@ -1562,7 +1649,7 @@ body {
   }
 
   .vintage-detail-image {
-    max-height: 60vh;
+    max-height: 100%;
   }
 }
 

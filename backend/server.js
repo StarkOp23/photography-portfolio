@@ -1,27 +1,79 @@
-// server.js - Express Backend with MongoDB
+// server.js - Express Backend with Cloudinary Storage
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 require('dotenv').config();
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// ===================== CLOUDINARY CONFIGURATION =====================
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+console.log('☁️  Cloudinary configured:', process.env.CLOUDINARY_CLOUD_NAME ? 'Yes' : 'No');
+
+// ===================== PRODUCTION CORS CONFIGURATION =====================
+
+const isProduction = process.env.NODE_ENV === 'production';
+
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    process.env.FRONTEND_URL,
+].filter(Boolean);
+
+console.log('🌐 Allowed Origins:', allowedOrigins);
+console.log('🔧 Environment:', isProduction ? 'Production' : 'Development');
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        if (!origin) {
+            return callback(null, true);
+        }
+
+        if (!isProduction) {
+            return callback(null, true);
+        }
+
+        if (allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            console.log('❌ CORS blocked origin:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
+    maxAge: 600
+};
+
+app.use(cors(corsOptions));
+
+// ===================== MIDDLEWARE =====================
+
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
+app.use(express.urlencoded({ extended: true }));
 
-// Create uploads directory if it doesn't exist
-if (!fs.existsSync('uploads')) {
-    fs.mkdirSync('uploads');
-}
+// Request logging middleware
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    next();
+});
 
-// MongoDB Connection
+// ===================== MONGODB CONNECTION =====================
+
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/photographer_portfolio', {
     useNewUrlParser: true,
     useUnifiedTopology: true,
@@ -31,7 +83,6 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/photograp
 
 // ===================== SCHEMAS =====================
 
-// User Schema (for admin authentication)
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
     email: { type: String, required: true, unique: true },
@@ -42,7 +93,6 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', userSchema);
 
-// Post Schema
 const postSchema = new mongoose.Schema({
     title: { type: String, required: true },
     type: { type: String, enum: ['photo', 'video'], default: 'photo' },
@@ -57,6 +107,7 @@ const postSchema = new mongoose.Schema({
     aperture: { type: String },
     shutterSpeed: { type: String },
     mediaUrl: { type: String, required: true },
+    cloudinaryPublicId: { type: String }, // Store Cloudinary ID for deletion
     tags: [String],
     views: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
@@ -67,7 +118,6 @@ const postSchema = new mongoose.Schema({
 
 const Post = mongoose.model('Post', postSchema);
 
-// Gear Schema
 const gearSchema = new mongoose.Schema({
     name: { type: String, required: true },
     type: { type: String, enum: ['camera', 'lens', 'accessory'], required: true },
@@ -75,6 +125,7 @@ const gearSchema = new mongoose.Schema({
     model: { type: String },
     description: { type: String },
     imageUrl: { type: String },
+    cloudinaryPublicId: { type: String },
     specs: mongoose.Schema.Types.Mixed,
     purchaseDate: { type: Date },
     inUse: { type: Boolean, default: true },
@@ -83,7 +134,6 @@ const gearSchema = new mongoose.Schema({
 
 const Gear = mongoose.model('Gear', gearSchema);
 
-// Contact Form Schema
 const contactSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true },
@@ -97,22 +147,39 @@ const contactSchema = new mongoose.Schema({
 
 const Contact = mongoose.model('Contact', contactSchema);
 
-// ===================== FILE UPLOAD =====================
+// ===================== CLOUDINARY FILE UPLOAD =====================
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/');
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+// Configure Cloudinary storage for Multer
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: async (req, file) => {
+        // Determine if it's video or image
+        const isVideo = file.mimetype.startsWith('video/');
+
+        return {
+            folder: 'photographer-portfolio', // Cloudinary folder name
+            resource_type: isVideo ? 'video' : 'image',
+            allowed_formats: isVideo
+                ? ['mp4', 'mov', 'avi', 'wmv', 'flv', 'webm']
+                : ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+            transformation: isVideo
+                ? [
+                    { quality: 'auto', fetch_format: 'auto' },
+                    { width: 1920, height: 1080, crop: 'limit' }
+                ]
+                : [
+                    { quality: 'auto', fetch_format: 'auto' },
+                    { width: 2000, crop: 'limit' }
+                ],
+            public_id: `${Date.now()}-${file.originalname.split('.')[0]}` // Unique filename
+        };
     }
 });
 
 const fileFilter = (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|mp4|mov|avi|webp/;
+    const allowedTypes = /jpeg|jpg|png|gif|mp4|mov|avi|webp|wmv|flv|webm/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
+    const mimetype = file.mimetype.match(/^(image|video)\//);
 
     if (mimetype && extname) {
         return cb(null, true);
@@ -124,12 +191,11 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
     storage: storage,
     fileFilter: fileFilter,
-    limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+    limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit (Cloudinary free tier supports up to 100MB)
 });
 
 // ===================== MIDDLEWARE =====================
 
-// Authentication middleware
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -147,7 +213,6 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// Admin check middleware
 const isAdmin = (req, res, next) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
@@ -157,25 +222,19 @@ const isAdmin = (req, res, next) => {
 
 // ===================== AUTH ROUTES =====================
 
-// Register (first user becomes admin)
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { username, email, password } = req.body;
 
-        // Check if user already exists
         const existingUser = await User.findOne({ $or: [{ email }, { username }] });
         if (existingUser) {
             return res.status(400).json({ error: 'User already exists' });
         }
 
-        // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Check if this is the first user (make them admin)
         const userCount = await User.countDocuments();
         const role = userCount === 0 ? 'admin' : 'user';
 
-        // Create user
         const user = new User({
             username,
             email,
@@ -185,7 +244,6 @@ app.post('/api/auth/register', async (req, res) => {
 
         await user.save();
 
-        // Generate token
         const token = jwt.sign(
             { id: user._id, username: user.username, role: user.role },
             process.env.JWT_SECRET || 'your-secret-key',
@@ -207,24 +265,20 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Find user
         const user = await User.findOne({ email });
         if (!user) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // Check password
         const isValidPassword = await bcrypt.compare(password, user.password);
         if (!isValidPassword) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // Generate token
         const token = jwt.sign(
             { id: user._id, username: user.username, role: user.role },
             process.env.JWT_SECRET || 'your-secret-key',
@@ -246,14 +300,12 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Verify token
 app.get('/api/auth/verify', authenticateToken, (req, res) => {
     res.json({ valid: true, user: req.user });
 });
 
 // ===================== POST ROUTES =====================
 
-// Get all posts (with filtering and pagination)
 app.get('/api/posts', async (req, res) => {
     try {
         const { category, search, page = 1, limit = 12, sort = '-createdAt' } = req.query;
@@ -289,7 +341,6 @@ app.get('/api/posts', async (req, res) => {
     }
 });
 
-// Get single post by ID
 app.get('/api/posts/:id', async (req, res) => {
     try {
         const post = await Post.findById(req.params.id);
@@ -297,7 +348,6 @@ app.get('/api/posts/:id', async (req, res) => {
             return res.status(404).json({ error: 'Post not found' });
         }
 
-        // Increment view count
         post.views += 1;
         await post.save();
 
@@ -307,31 +357,57 @@ app.get('/api/posts/:id', async (req, res) => {
     }
 });
 
-// Create new post (admin only)
 app.post('/api/posts', authenticateToken, isAdmin, upload.single('media'), async (req, res) => {
     try {
+        console.log('📤 Upload request received');
+        console.log('File:', req.file ? 'Yes' : 'No');
+
+        if (!req.file) {
+            return res.status(400).json({ error: 'No media file uploaded' });
+        }
+
         const postData = {
             ...req.body,
-            mediaUrl: req.file ? `/uploads/${req.file.filename}` : req.body.mediaUrl,
+            mediaUrl: req.file.path, // Cloudinary URL
+            cloudinaryPublicId: req.file.filename, // Store for deletion
             tags: req.body.tags ? JSON.parse(req.body.tags) : []
         };
+
+        console.log('☁️  Cloudinary URL:', req.file.path);
+        console.log('🆔 Public ID:', req.file.filename);
 
         const post = new Post(postData);
         await post.save();
 
+        console.log('✅ Post created successfully');
+
         res.status(201).json({ message: 'Post created successfully', post });
     } catch (error) {
+        console.error('❌ Error creating post:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Update post (admin only)
 app.put('/api/posts/:id', authenticateToken, isAdmin, upload.single('media'), async (req, res) => {
     try {
         const updateData = { ...req.body, updatedAt: Date.now() };
 
+        // If new file uploaded, delete old one from Cloudinary
         if (req.file) {
-            updateData.mediaUrl = `/uploads/${req.file.filename}`;
+            const post = await Post.findById(req.params.id);
+            if (post && post.cloudinaryPublicId) {
+                try {
+                    await cloudinary.uploader.destroy(post.cloudinaryPublicId, {
+                        resource_type: post.type === 'video' ? 'video' : 'image'
+                    });
+                    console.log('🗑️  Deleted old file from Cloudinary');
+                } catch (err) {
+                    console.error('Error deleting old file:', err);
+                }
+            }
+
+            updateData.mediaUrl = req.file.path;
+            updateData.cloudinaryPublicId = req.file.filename;
         }
 
         if (req.body.tags && typeof req.body.tags === 'string') {
@@ -354,7 +430,6 @@ app.put('/api/posts/:id', authenticateToken, isAdmin, upload.single('media'), as
     }
 });
 
-// Delete post (admin only)
 app.delete('/api/posts/:id', authenticateToken, isAdmin, async (req, res) => {
     try {
         const post = await Post.findById(req.params.id);
@@ -362,11 +437,15 @@ app.delete('/api/posts/:id', authenticateToken, isAdmin, async (req, res) => {
             return res.status(404).json({ error: 'Post not found' });
         }
 
-        // Delete associated file
-        if (post.mediaUrl && post.mediaUrl.startsWith('/uploads/')) {
-            const filePath = path.join(__dirname, post.mediaUrl);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
+        // Delete file from Cloudinary
+        if (post.cloudinaryPublicId) {
+            try {
+                await cloudinary.uploader.destroy(post.cloudinaryPublicId, {
+                    resource_type: post.type === 'video' ? 'video' : 'image'
+                });
+                console.log('🗑️  Deleted file from Cloudinary');
+            } catch (err) {
+                console.error('Error deleting from Cloudinary:', err);
             }
         }
 
@@ -377,7 +456,6 @@ app.delete('/api/posts/:id', authenticateToken, isAdmin, async (req, res) => {
     }
 });
 
-// Like post
 app.post('/api/posts/:id/like', async (req, res) => {
     try {
         const post = await Post.findById(req.params.id);
@@ -396,7 +474,6 @@ app.post('/api/posts/:id/like', async (req, res) => {
 
 // ===================== GEAR ROUTES =====================
 
-// Get all gear
 app.get('/api/gear', async (req, res) => {
     try {
         const { type } = req.query;
@@ -408,12 +485,12 @@ app.get('/api/gear', async (req, res) => {
     }
 });
 
-// Create gear (admin only)
 app.post('/api/gear', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
         const gearData = {
             ...req.body,
-            imageUrl: req.file ? `/uploads/${req.file.filename}` : req.body.imageUrl,
+            imageUrl: req.file ? req.file.path : req.body.imageUrl,
+            cloudinaryPublicId: req.file ? req.file.filename : null,
             specs: req.body.specs ? JSON.parse(req.body.specs) : {}
         };
 
@@ -426,13 +503,22 @@ app.post('/api/gear', authenticateToken, isAdmin, upload.single('image'), async 
     }
 });
 
-// Update gear (admin only)
 app.put('/api/gear/:id', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
         const updateData = { ...req.body };
 
         if (req.file) {
-            updateData.imageUrl = `/uploads/${req.file.filename}`;
+            const gear = await Gear.findById(req.params.id);
+            if (gear && gear.cloudinaryPublicId) {
+                try {
+                    await cloudinary.uploader.destroy(gear.cloudinaryPublicId);
+                } catch (err) {
+                    console.error('Error deleting old gear image:', err);
+                }
+            }
+
+            updateData.imageUrl = req.file.path;
+            updateData.cloudinaryPublicId = req.file.filename;
         }
 
         if (req.body.specs && typeof req.body.specs === 'string') {
@@ -451,9 +537,17 @@ app.put('/api/gear/:id', authenticateToken, isAdmin, upload.single('image'), asy
     }
 });
 
-// Delete gear (admin only)
 app.delete('/api/gear/:id', authenticateToken, isAdmin, async (req, res) => {
     try {
+        const gear = await Gear.findById(req.params.id);
+        if (gear && gear.cloudinaryPublicId) {
+            try {
+                await cloudinary.uploader.destroy(gear.cloudinaryPublicId);
+            } catch (err) {
+                console.error('Error deleting gear image:', err);
+            }
+        }
+
         await Gear.findByIdAndDelete(req.params.id);
         res.json({ message: 'Gear deleted successfully' });
     } catch (error) {
@@ -463,7 +557,6 @@ app.delete('/api/gear/:id', authenticateToken, isAdmin, async (req, res) => {
 
 // ===================== CONTACT ROUTES =====================
 
-// Submit contact form
 app.post('/api/contact', async (req, res) => {
     try {
         const contact = new Contact(req.body);
@@ -474,7 +567,6 @@ app.post('/api/contact', async (req, res) => {
     }
 });
 
-// Get all contacts (admin only)
 app.get('/api/contact', authenticateToken, isAdmin, async (req, res) => {
     try {
         const contacts = await Contact.find().sort('-createdAt');
@@ -484,7 +576,6 @@ app.get('/api/contact', authenticateToken, isAdmin, async (req, res) => {
     }
 });
 
-// Update contact status (admin only)
 app.put('/api/contact/:id', authenticateToken, isAdmin, async (req, res) => {
     try {
         const contact = await Contact.findByIdAndUpdate(
@@ -500,7 +591,6 @@ app.put('/api/contact/:id', authenticateToken, isAdmin, async (req, res) => {
 
 // ===================== STATS ROUTES =====================
 
-// Get dashboard statistics (admin only)
 app.get('/api/stats', authenticateToken, isAdmin, async (req, res) => {
     try {
         const totalPosts = await Post.countDocuments();
@@ -537,7 +627,6 @@ app.get('/api/stats', authenticateToken, isAdmin, async (req, res) => {
 
 // ===================== UTILITY ROUTES =====================
 
-// Upload single file
 app.post('/api/upload', authenticateToken, isAdmin, upload.single('file'), (req, res) => {
     try {
         if (!req.file) {
@@ -545,16 +634,22 @@ app.post('/api/upload', authenticateToken, isAdmin, upload.single('file'), (req,
         }
         res.json({
             message: 'File uploaded successfully',
-            url: `/uploads/${req.file.filename}`
+            url: req.file.path,
+            publicId: req.file.filename
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date() });
+    res.json({
+        status: 'OK',
+        timestamp: new Date(),
+        environment: process.env.NODE_ENV || 'development',
+        frontendUrl: process.env.FRONTEND_URL || 'Not set',
+        cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'Configured' : 'Not configured'
+    });
 });
 
 // ===================== ERROR HANDLING =====================
@@ -569,7 +664,9 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📁 Uploads directory: ${path.join(__dirname, 'uploads')}`);
+    console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL || 'Not set'}`);
+    console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? 'Connected' : 'Not configured'}`);
 });
 
 module.exports = app;
