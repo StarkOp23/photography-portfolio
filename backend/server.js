@@ -155,6 +155,14 @@ const storage = new CloudinaryStorage({
     params: async (req, file) => {
         // Determine if it's video or image
         const isVideo = file.mimetype.startsWith('video/');
+        if (req.file) {
+            console.log('📦 Cloudinary response:', {
+                path: req.file.path,
+                filename: req.file.filename,
+                size: req.file.size,
+                format: req.file.format
+            });
+        }
 
         return {
             folder: 'photographer-portfolio', // Cloudinary folder name
@@ -173,6 +181,7 @@ const storage = new CloudinaryStorage({
                 ],
             public_id: `${Date.now()}-${file.originalname.split('.')[0]}` // Unique filename
         };
+
     }
 });
 
@@ -295,6 +304,7 @@ app.post('/api/auth/login', async (req, res) => {
                 role: user.role
             }
         });
+        console.table("Login SuccessFull")
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -361,6 +371,14 @@ app.post('/api/posts', authenticateToken, isAdmin, upload.single('media'), async
     try {
         console.log('📤 Upload request received');
         console.log('File:', req.file ? 'Yes' : 'No');
+        console.log('📋 Form data:', {
+            title: req.body.title,
+            story: req.body.story,
+            location: req.body.location,
+            date: req.body.date,
+            category: req.body.category,
+            fileSize: req.file ? (req.file.size / 1024).toFixed(2) + ' KB' : 'N/A'
+        });
 
         if (!req.file) {
             return res.status(400).json({ error: 'No media file uploaded' });
@@ -368,8 +386,8 @@ app.post('/api/posts', authenticateToken, isAdmin, upload.single('media'), async
 
         const postData = {
             ...req.body,
-            mediaUrl: req.file.path, // Cloudinary URL
-            cloudinaryPublicId: req.file.filename, // Store for deletion
+            mediaUrl: req.file.path,
+            cloudinaryPublicId: req.file.filename,
             tags: req.body.tags ? JSON.parse(req.body.tags) : []
         };
 
@@ -384,7 +402,7 @@ app.post('/api/posts', authenticateToken, isAdmin, upload.single('media'), async
         res.status(201).json({ message: 'Post created successfully', post });
     } catch (error) {
         console.error('❌ Error creating post:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: error.message, details: error.toString() });
     }
 });
 
