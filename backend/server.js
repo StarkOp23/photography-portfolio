@@ -1,4 +1,4 @@
-// server.js - Express Backend with Cloudinary Storage
+// server.js - Express Backend with MongoDB GridFS for File Storage
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -6,21 +6,11 @@ const multer = require('multer');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const { GridFSBucket } = require('mongodb');
+const { Readable } = require('stream');
 require('dotenv').config();
 
 const app = express();
-
-// ===================== CLOUDINARY CONFIGURATION =====================
-
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-console.log('☁️  Cloudinary configured:', process.env.CLOUDINARY_CLOUD_NAME ? 'Yes' : 'No');
 
 // ===================== PRODUCTION CORS CONFIGURATION =====================
 
@@ -37,14 +27,8 @@ console.log('🔧 Environment:', isProduction ? 'Production' : 'Development');
 
 const corsOptions = {
     origin: function (origin, callback) {
-        if (!origin) {
-            return callback(null, true);
-        }
-
-        if (!isProduction) {
-            return callback(null, true);
-        }
-
+        if (!origin) return callback(null, true);
+        if (!isProduction) return callback(null, true);
         if (allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
@@ -66,7 +50,6 @@ app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Request logging middleware
 app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
     next();
@@ -74,11 +57,23 @@ app.use((req, res, next) => {
 
 // ===================== MONGODB CONNECTION =====================
 
+let gfs, gridFSBucket;
+
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/photographer_portfolio', {
     useNewUrlParser: true,
     useUnifiedTopology: true,
 })
-    .then(() => console.log('✅ MongoDB Connected'))
+    .then(() => {
+        console.log('✅ MongoDB Connected');
+        
+        // Initialize GridFS
+        const db = mongoose.connection.db;
+        gridFSBucket = new GridFSBucket(db, {
+            bucketName: 'uploads'
+        });
+        gfs = gridFSBucket;
+        console.log('✅ GridFS Initialized');
+    })
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
 // ===================== SCHEMAS =====================
@@ -106,8 +101,7 @@ const postSchema = new mongoose.Schema({
     iso: { type: String },
     aperture: { type: String },
     shutterSpeed: { type: String },
-    mediaUrl: { type: String, required: true },
-    cloudinaryPublicId: { type: String }, // Store Cloudinary ID for deletion
+    mediaUrl: { type: String, required: true }, // This will store GridFS file ID
     tags: [String],
     views: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
@@ -125,7 +119,6 @@ const gearSchema = new mongoose.Schema({
     model: { type: String },
     description: { type: String },
     imageUrl: { type: String },
-    cloudinaryPublicId: { type: String },
     specs: mongoose.Schema.Types.Mixed,
     purchaseDate: { type: Date },
     inUse: { type: Boolean, default: true },
@@ -147,48 +140,14 @@ const contactSchema = new mongoose.Schema({
 
 const Contact = mongoose.model('Contact', contactSchema);
 
-// ===================== CLOUDINARY FILE UPLOAD =====================
+// ===================== FILE UPLOAD WITH MEMORY STORAGE =====================
 
-// Configure Cloudinary storage for Multer
-const storage = new CloudinaryStorage({
-    cloudinary: cloudinary,
-    params: async (req, file) => {
-        // Determine if it's video or image
-        const isVideo = file.mimetype.startsWith('video/');
-        if (req.file) {
-            console.log('📦 Cloudinary response:', {
-                path: req.file.path,
-                filename: req.file.filename,
-                size: req.file.size,
-                format: req.file.format
-            });
-        }
-
-        return {
-            folder: 'photographer-portfolio', // Cloudinary folder name
-            resource_type: isVideo ? 'video' : 'image',
-            allowed_formats: isVideo
-                ? ['mp4', 'mov', 'avi', 'wmv', 'flv', 'webm']
-                : ['jpg', 'jpeg', 'png', 'gif', 'webp'],
-            transformation: isVideo
-                ? [
-                    { quality: 'auto', fetch_format: 'auto' },
-                    { width: 1920, height: 1080, crop: 'limit' }
-                ]
-                : [
-                    { quality: 'auto', fetch_format: 'auto' },
-                    { width: 2000, crop: 'limit' }
-                ],
-            public_id: `${Date.now()}-${file.originalname.split('.')[0]}` // Unique filename
-        };
-
-    }
-});
+const storage = multer.memoryStorage(); // Store in memory instead of disk
 
 const fileFilter = (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|mp4|mov|avi|webp|wmv|flv|webm/;
+    const allowedTypes = /jpeg|jpg|png|gif|mp4|mov|avi|webp/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = file.mimetype.match(/^(image|video)\//);
+    const mimetype = allowedTypes.test(file.mimetype);
 
     if (mimetype && extname) {
         return cb(null, true);
@@ -200,7 +159,71 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
     storage: storage,
     fileFilter: fileFilter,
-    limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit (Cloudinary free tier supports up to 100MB)
+    limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+});
+
+// ===================== GRIDFS HELPER FUNCTIONS =====================
+
+// Upload file to GridFS
+async function uploadToGridFS(file) {
+    return new Promise((resolve, reject) => {
+        const readableStream = Readable.from(file.buffer);
+        const uploadStream = gridFSBucket.openUploadStream(file.originalname, {
+            contentType: file.mimetype,
+            metadata: {
+                originalname: file.originalname,
+                encoding: file.encoding,
+                mimetype: file.mimetype,
+                size: file.size
+            }
+        });
+
+        readableStream.pipe(uploadStream)
+            .on('error', reject)
+            .on('finish', () => {
+                resolve(uploadStream.id.toString());
+            });
+    });
+}
+
+// Delete file from GridFS
+async function deleteFromGridFS(fileId) {
+    try {
+        await gridFSBucket.delete(new mongoose.Types.ObjectId(fileId));
+        console.log(`✅ Deleted file: ${fileId}`);
+    } catch (error) {
+        console.error(`❌ Error deleting file: ${fileId}`, error);
+    }
+}
+
+// ===================== SERVE FILES FROM GRIDFS =====================
+
+app.get('/api/file/:fileId', async (req, res) => {
+    try {
+        const fileId = new mongoose.Types.ObjectId(req.params.fileId);
+        
+        // Get file info
+        const files = await gridFSBucket.find({ _id: fileId }).toArray();
+        
+        if (!files || files.length === 0) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+
+        const file = files[0];
+        
+        // Set proper headers
+        res.set('Content-Type', file.contentType);
+        res.set('Content-Length', file.length);
+        res.set('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+        
+        // Stream file to response
+        const downloadStream = gridFSBucket.openDownloadStream(fileId);
+        downloadStream.pipe(res);
+        
+    } catch (error) {
+        console.error('Error serving file:', error);
+        res.status(500).json({ error: 'Error retrieving file' });
+    }
 });
 
 // ===================== MIDDLEWARE =====================
@@ -304,7 +327,6 @@ app.post('/api/auth/login', async (req, res) => {
                 role: user.role
             }
         });
-        console.table("Login SuccessFull")
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -369,80 +391,65 @@ app.get('/api/posts/:id', async (req, res) => {
 
 app.post('/api/posts', authenticateToken, isAdmin, upload.single('media'), async (req, res) => {
     try {
-        console.log('📤 Upload request received');
-        console.log('File:', req.file ? 'Yes' : 'No');
-        console.log('📋 Form data:', {
-            title: req.body.title,
-            story: req.body.story,
-            location: req.body.location,
-            date: req.body.date,
-            category: req.body.category,
-            fileSize: req.file ? (req.file.size / 1024).toFixed(2) + ' KB' : 'N/A'
-        });
+        let mediaUrl = req.body.mediaUrl;
 
-        if (!req.file) {
-            return res.status(400).json({ error: 'No media file uploaded' });
+        // If file uploaded, save to GridFS
+        if (req.file) {
+            const fileId = await uploadToGridFS(req.file);
+            mediaUrl = `/api/file/${fileId}`;
+            console.log(`✅ File uploaded to GridFS: ${fileId}`);
         }
 
         const postData = {
             ...req.body,
-            mediaUrl: req.file.path,
-            cloudinaryPublicId: req.file.filename,
+            mediaUrl: mediaUrl,
             tags: req.body.tags ? JSON.parse(req.body.tags) : []
         };
-
-        console.log('☁️  Cloudinary URL:', req.file.path);
-        console.log('🆔 Public ID:', req.file.filename);
 
         const post = new Post(postData);
         await post.save();
 
-        console.log('✅ Post created successfully');
-
         res.status(201).json({ message: 'Post created successfully', post });
     } catch (error) {
-        console.error('❌ Error creating post:', error);
-        res.status(500).json({ error: error.message, details: error.toString() });
+        console.error('Error creating post:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
 app.put('/api/posts/:id', authenticateToken, isAdmin, upload.single('media'), async (req, res) => {
     try {
+        const post = await Post.findById(req.params.id);
+        if (!post) {
+            return res.status(404).json({ error: 'Post not found' });
+        }
+
         const updateData = { ...req.body, updatedAt: Date.now() };
 
-        // If new file uploaded, delete old one from Cloudinary
+        // If new file uploaded
         if (req.file) {
-            const post = await Post.findById(req.params.id);
-            if (post && post.cloudinaryPublicId) {
-                try {
-                    await cloudinary.uploader.destroy(post.cloudinaryPublicId, {
-                        resource_type: post.type === 'video' ? 'video' : 'image'
-                    });
-                    console.log('🗑️  Deleted old file from Cloudinary');
-                } catch (err) {
-                    console.error('Error deleting old file:', err);
-                }
+            // Delete old file from GridFS
+            if (post.mediaUrl && post.mediaUrl.startsWith('/api/file/')) {
+                const oldFileId = post.mediaUrl.split('/').pop();
+                await deleteFromGridFS(oldFileId);
             }
 
-            updateData.mediaUrl = req.file.path;
-            updateData.cloudinaryPublicId = req.file.filename;
+            // Upload new file
+            const fileId = await uploadToGridFS(req.file);
+            updateData.mediaUrl = `/api/file/${fileId}`;
+            console.log(`✅ File updated in GridFS: ${fileId}`);
         }
 
         if (req.body.tags && typeof req.body.tags === 'string') {
             updateData.tags = JSON.parse(req.body.tags);
         }
 
-        const post = await Post.findByIdAndUpdate(
+        const updatedPost = await Post.findByIdAndUpdate(
             req.params.id,
             updateData,
             { new: true, runValidators: true }
         );
 
-        if (!post) {
-            return res.status(404).json({ error: 'Post not found' });
-        }
-
-        res.json({ message: 'Post updated successfully', post });
+        res.json({ message: 'Post updated successfully', post: updatedPost });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -455,16 +462,10 @@ app.delete('/api/posts/:id', authenticateToken, isAdmin, async (req, res) => {
             return res.status(404).json({ error: 'Post not found' });
         }
 
-        // Delete file from Cloudinary
-        if (post.cloudinaryPublicId) {
-            try {
-                await cloudinary.uploader.destroy(post.cloudinaryPublicId, {
-                    resource_type: post.type === 'video' ? 'video' : 'image'
-                });
-                console.log('🗑️  Deleted file from Cloudinary');
-            } catch (err) {
-                console.error('Error deleting from Cloudinary:', err);
-            }
+        // Delete file from GridFS
+        if (post.mediaUrl && post.mediaUrl.startsWith('/api/file/')) {
+            const fileId = post.mediaUrl.split('/').pop();
+            await deleteFromGridFS(fileId);
         }
 
         await Post.findByIdAndDelete(req.params.id);
@@ -505,10 +506,16 @@ app.get('/api/gear', async (req, res) => {
 
 app.post('/api/gear', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
+        let imageUrl = req.body.imageUrl;
+
+        if (req.file) {
+            const fileId = await uploadToGridFS(req.file);
+            imageUrl = `/api/file/${fileId}`;
+        }
+
         const gearData = {
             ...req.body,
-            imageUrl: req.file ? req.file.path : req.body.imageUrl,
-            cloudinaryPublicId: req.file ? req.file.filename : null,
+            imageUrl: imageUrl,
             specs: req.body.specs ? JSON.parse(req.body.specs) : {}
         };
 
@@ -523,33 +530,30 @@ app.post('/api/gear', authenticateToken, isAdmin, upload.single('image'), async 
 
 app.put('/api/gear/:id', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
+        const gear = await Gear.findById(req.params.id);
+        if (!gear) {
+            return res.status(404).json({ error: 'Gear not found' });
+        }
+
         const updateData = { ...req.body };
 
         if (req.file) {
-            const gear = await Gear.findById(req.params.id);
-            if (gear && gear.cloudinaryPublicId) {
-                try {
-                    await cloudinary.uploader.destroy(gear.cloudinaryPublicId);
-                } catch (err) {
-                    console.error('Error deleting old gear image:', err);
-                }
+            if (gear.imageUrl && gear.imageUrl.startsWith('/api/file/')) {
+                const oldFileId = gear.imageUrl.split('/').pop();
+                await deleteFromGridFS(oldFileId);
             }
 
-            updateData.imageUrl = req.file.path;
-            updateData.cloudinaryPublicId = req.file.filename;
+            const fileId = await uploadToGridFS(req.file);
+            updateData.imageUrl = `/api/file/${fileId}`;
         }
 
         if (req.body.specs && typeof req.body.specs === 'string') {
             updateData.specs = JSON.parse(req.body.specs);
         }
 
-        const gear = await Gear.findByIdAndUpdate(req.params.id, updateData, { new: true });
+        const updatedGear = await Gear.findByIdAndUpdate(req.params.id, updateData, { new: true });
 
-        if (!gear) {
-            return res.status(404).json({ error: 'Gear not found' });
-        }
-
-        res.json({ message: 'Gear updated successfully', gear });
+        res.json({ message: 'Gear updated successfully', gear: updatedGear });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -558,12 +562,9 @@ app.put('/api/gear/:id', authenticateToken, isAdmin, upload.single('image'), asy
 app.delete('/api/gear/:id', authenticateToken, isAdmin, async (req, res) => {
     try {
         const gear = await Gear.findById(req.params.id);
-        if (gear && gear.cloudinaryPublicId) {
-            try {
-                await cloudinary.uploader.destroy(gear.cloudinaryPublicId);
-            } catch (err) {
-                console.error('Error deleting gear image:', err);
-            }
+        if (gear && gear.imageUrl && gear.imageUrl.startsWith('/api/file/')) {
+            const fileId = gear.imageUrl.split('/').pop();
+            await deleteFromGridFS(fileId);
         }
 
         await Gear.findByIdAndDelete(req.params.id);
@@ -645,15 +646,17 @@ app.get('/api/stats', authenticateToken, isAdmin, async (req, res) => {
 
 // ===================== UTILITY ROUTES =====================
 
-app.post('/api/upload', authenticateToken, isAdmin, upload.single('file'), (req, res) => {
+app.post('/api/upload', authenticateToken, isAdmin, upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
+
+        const fileId = await uploadToGridFS(req.file);
+
         res.json({
             message: 'File uploaded successfully',
-            url: req.file.path,
-            publicId: req.file.filename
+            url: `/api/file/${fileId}`
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -666,7 +669,7 @@ app.get('/api/health', (req, res) => {
         timestamp: new Date(),
         environment: process.env.NODE_ENV || 'development',
         frontendUrl: process.env.FRONTEND_URL || 'Not set',
-        cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'Configured' : 'Not configured'
+        gridfs: gfs ? 'Connected' : 'Not initialized'
     });
 });
 
@@ -684,7 +687,7 @@ app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL || 'Not set'}`);
-    console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? 'Connected' : 'Not configured'}`);
+    console.log(`💾 File Storage: MongoDB GridFS`);
 });
 
 module.exports = app;

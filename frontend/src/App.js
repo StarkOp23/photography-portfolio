@@ -14,15 +14,6 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Add this RIGHT AFTER the api.interceptors code:
-const getMediaUrl = (url) => {
-  if (!url) return '';
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    return url;
-  }
-  return API_URL.replace('/api', '') + url;
-};
-
 // Animation variants (keep existing variants)
 
 const pageVariants = {
@@ -280,7 +271,7 @@ function App() {
   const handleEditGear = (gearItem) => {
     setGearForm({ ...gearItem, _id: gearItem._id });
     if (gearItem.imageUrl) {
-      setGearPreview(getMediaUrl(gearItem.imageUrl));
+      setGearPreview(API_URL.replace('/api', '') + gearItem.imageUrl);
     }
     setShowGearModal(true);
   };
@@ -337,34 +328,27 @@ function App() {
       });
       if (mediaFile) formData.append('media', mediaFile);
 
-      console.log('📤 Uploading post...');  // ADD THIS
-
       if (postForm._id) {
-        const response = await api.put(`/posts/${postForm._id}`, formData, {
+        await api.put(`/posts/${postForm._id}`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' }
         });
-        console.log('✅ Post updated:', response.data);  // ADD THIS
       } else {
-        const response = await api.post('/posts', formData, {
+        await api.post('/posts', formData, {
           headers: { 'Content-Type': 'multipart/form-data' }
         });
-        console.log('✅ Post created:', response.data);  // ADD THIS
       }
 
-      alert('Post saved successfully!');  // ADD THIS
       setShowUploadModal(false);
       resetPostForm();
       fetchPosts();
     } catch (error) {
-      console.error('❌ Upload error:', error);  // ADD THIS
-      console.error('❌ Error response:', error.response?.data);  // ADD THIS
       alert(error.response?.data?.error || 'Failed to save post');
     }
   };
 
   const handleEditPost = (post) => {
     setPostForm({ ...post, _id: post._id });
-    setMediaPreview(getMediaUrl(post.mediaUrl));
+    setMediaPreview(API_URL.replace('/api', '') + post.mediaUrl);
     setShowUploadModal(true);
   };
 
@@ -663,7 +647,7 @@ function App() {
                       >
                         <div className="vintage-post-image-container">
                           <motion.img
-                            src={getMediaUrl(post.mediaUrl)}
+                            src={API_URL.replace('/api', '') + post.mediaUrl}
                             alt={post.title}
                             className="vintage-post-image"
                             whileHover={{ scale: 1.1 }}
@@ -886,7 +870,7 @@ function App() {
                   >
                     {item.imageUrl && (
                       <motion.img
-                        src={getMediaUrl(item.imageUrl)}
+                        src={API_URL.replace('/api', '') + item.imageUrl}
                         alt={item.name}
                         className="vintage-gear-image"
                         whileHover={{ scale: 1.1 }}
@@ -1102,7 +1086,7 @@ function App() {
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: 0.6 + index * 0.1 }}
                       >
-                        <img src={getMediaUrl(post.mediaUrl)} alt={post.title} />
+                        <img src={API_URL.replace('/api', '') + post.mediaUrl} alt={post.title} />
                         <div>
                           <strong>{post.title}</strong>
                           <p>{new Date(post.createdAt).toLocaleDateString()}</p>
@@ -1120,7 +1104,7 @@ function App() {
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: 0.6 + index * 0.1 }}
                       >
-                        <img src={getMediaUrl(post.mediaUrl)} alt={post.title} />
+                        <img src={API_URL.replace('/api', '') + post.mediaUrl} alt={post.title} />
                         <div>
                           <strong>{post.title}</strong>
                           <p>👁️ {post.views} views</p>
@@ -1667,7 +1651,7 @@ function App() {
                 ✕
               </motion.button>
               <motion.img
-                src={getMediaUrl(selectedPost.mediaUrl)}
+                src={API_URL.replace('/api', '') + selectedPost.mediaUrl}
                 alt={selectedPost.title}
                 className="vintage-detail-image"
                 initial={{ opacity: 0, scale: 1.1 }}
